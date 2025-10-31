@@ -1,0 +1,85 @@
+#!/bin/bash
+
+###############################################################################
+# Script Name : check_docker_containers.sh
+# Description : Nagios plugin script to check the running status of all Docker
+#               containers on the host. It dynamically fetches all container
+#               names using 'docker ps -a' and verifies if each container is
+#               running or not.
+#
+# Usage       : ./check_docker_containers.sh
+#
+# Output      : Returns Nagios-compatible status messages:
+#                 - OK:        All containers are running
+#                 - CRITICAL:   Some containers are not running
+#                 - CRITICAL:  All containers are stopped or Docker not running
+#                 - UNKNOWN:   Unexpected error (not used currently)
+#
+# Exit Codes  :
+#   0 = OK
+#   1 = WARNING
+#   2 = CRITICAL
+#   3 = UNKNOWN
+#
+# Requirements:
+#   - Docker CLI must be installed and accessible by the user running this script
+#   - Nagios or compatible monitoring system (optional)
+#
+# Author      : Haroon
+# Version     : 1.1
+# Last Updated: 2025-10-30
+###############################################################################
+
+# Nagios Exit Codes
+STATE_OK=0
+STATE_WARNING=1
+STATE_CRITICAL=2
+STATE_UNKNOWN=3
+
+# --- Step 1: Check if Docker daemon is running ---
+if ! docker info >/dev/null 2>&1; then
+    echo "CRITICAL: Docker daemon not running or not accessible."
+    exit $STATE_CRITICAL
+fi
+
+# --- Step 2: Get all container names ---
+CONTAINERS_TO_CHECK=$(docker ps -a --format '{{.Names}}')
+
+if [ -z "$CONTAINERS_TO_CHECK" ]; then
+    echo "OK: No containers found on this host."
+    exit $STATE_OK
+fi
+
+IFS=$'\n' read -r -d '' -a CONTAINER_ARRAY <<< "$(echo -e "$CONTAINERS_TO_CHECK\n")"
+
+FAILED_CONTAINERS=()
+SUCCESSFUL_CONTAINERS=()
+
+# --- Step 3: Check each container's running status ---
+for CONTAINER in "${CONTAINER_ARRAY[@]}"; do
+    CONTAINER=$(echo "$CONTAINER" | xargs) # Trim whitespace
+    RUNNING_STATUS=$(docker inspect --format '{{.State.Status}}' "$CONTAINER" 2>/dev/null)
+    
+    if [ $? -ne 0 ]; then
+        FAILED_CONTAINERS+=("$CONTAINER (Not Found/Error)")
+    elif [ "$RUNNING_STATUS" = "running" ]; then
+        SUCCESSFUL_CONTAINERS+=("$CONTAINER")
+    else
+        FAILED_CONTAINERS+=("$CONTAINER (Status: $RUNNING_STATUS)")
+    fi
+done
+
+# --- Step 4: Determine Nagios state ---
+TOTAL_FAILED=${#FAILED_CONTAINERS[@]}
+TOTAL_CHECKED=${#CONTAINER_ARRAY[@]}
+
+if [ $TOTAL_FAILED -eq 0 ]; then
+    echo "OK: All $TOTAL_CHECKED containers are running. (${SUCCESSFUL_CONTAINERS[*]})"
+    exit $STATE_OK
+elif [ $TOTAL_FAILED -lt $TOTAL_CHECKED ]; then
+    echo "CRITICAL: $TOTAL_FAILED/$TOTAL_CHECKED containers are NOT running. Failed: ${FAILED_CONTAINERS[*]}."
+    exit $STATE_CRITICAL
+else
+    echo "CRITICAL: All $TOTAL_CHECKED containers are NOT running. Failed: ${FAILED_CONTAINERS[*]}."
+    exit $STATE_CRITICAL
+fi
